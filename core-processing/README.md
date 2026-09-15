@@ -3,14 +3,14 @@
 This directory tracks processing behavior and command-level decisions for VideoFuse.
 
 The MVP should expose processing through app-level methods rather than scattering command details throughout UI code:
-- `extractLastFrame(inputVideo, outputImagePath)`
+- `extractFrame(inputVideo, timestamp, outputImagePath)`
 - `stitchVideos(inputVideos, outputVideoPath)`
 
 ## Adapter Decision
 
 Do not bind UI code directly to a specific FFmpeg Flutter package.
 
-Milestone 0 tested `ffmpeg_kit_flutter_new`, but it forced older Android plugin dependencies that failed the debug build with the current Flutter/Android toolchain. Milestone 1 should select or validate a compatible adapter before implementing media processing.
+Milestone 0 tested `ffmpeg_kit_flutter_new`, but it forced older Android plugin dependencies that failed the debug build with the current Flutter/Android toolchain. The current frame-selection flow uses the Android native/Media3 path; merging remains the next processing milestone.
 
 ## Processing Defaults
 
@@ -20,7 +20,7 @@ Milestone 0 tested `ffmpeg_kit_flutter_new`, but it forced older Android plugin 
 - Never modify source media files.
 - Clean temporary files after success, failure, or cancellation when safe.
 
-## Extract Last Frame
+## Frame Extraction
 
 Recommended output:
 - PNG
@@ -30,8 +30,9 @@ Rationale:
 
 Validation expectations:
 - Support MP4 and MOV inputs for MVP.
-- Handle single-video and multi-video batch extraction.
-- Report per-file failures without discarding successful outputs.
+- Handle first, last, and custom timestamp selection.
+- Preserve the detected source frame rate for timestamp display.
+- Report extraction failures without discarding successful outputs.
 
 ## Stitch Videos
 

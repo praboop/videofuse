@@ -5,7 +5,7 @@ VideoFuse should feel like a focused utility, not a full editor.
 ## MVP Screens
 
 - Home
-- Extract Last Frame
+- Extract Frame
 - Stitch Videos
 - Processing Progress
 - Export Result
@@ -18,6 +18,8 @@ VideoFuse should feel like a focused utility, not a full editor.
 - Keep controls minimal and task-specific.
 - Use clear status states: selecting, ready, processing, success, failed, cancelled.
 - Explain failures in plain language.
+- Make the selected frame obvious in both the timeline grid and detailed strip.
+- Keep multi-video ordering visible before merging begins.
 
 ## Visual Direction
 

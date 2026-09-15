@@ -3,7 +3,7 @@
 VideoFuse is a lightweight, privacy-focused mobile utility app for AI video creators.
 
 The first Android MVP is intentionally narrow:
-- Extract the last frame from videos
+- Extract and save a selected frame from a video
 - Stitch multiple videos into one MP4 export
 
 See [`videofuse_product_strategy_and_mvp_plan.md`](videofuse_product_strategy_and_mvp_plan.md) for product strategy and the detailed milestone plan.
@@ -21,7 +21,11 @@ See [`videofuse_product_strategy_and_mvp_plan.md`](videofuse_product_strategy_an
 
 ## Current Status
 
-Milestone 0 is complete.
+Milestone 0 (foundation) and the frame-selection milestone are complete.
+The next development focus is the video merging/stitching workflow.
+
+For a compact implementation handoff when starting a new coding session, see
+[`docs/next-session-handoff.md`](docs/next-session-handoff.md).
 
 The Flutter Android app has been scaffolded in `/mobile-app`.
 

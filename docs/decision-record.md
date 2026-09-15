@@ -16,7 +16,7 @@ Rationale:
 
 Decision:
 The first MVP includes only:
-- Extract last frame
+- Extract and save a first, last, or custom frame
 - Stitch videos
 - Export/share outputs
 
@@ -24,6 +24,20 @@ Rationale:
 - These two utilities directly support AI creator continuity and clip assembly workflows.
 - A narrow MVP reduces media-processing QA risk.
 - Broader utilities can be added after export reliability is proven.
+
+## DR-007: Frame Selection Milestone
+
+Decision:
+Treat frame selection as a complete milestone before expanding the merging workflow.
+
+Included behavior:
+- First and last frame previews.
+- Cached timeline thumbnails with detected video frame rate.
+- Custom frame selection with detailed surrounding frames.
+- Timestamped frame saving through the Android Downloads flow.
+
+Status:
+Completed and verified on a physical Android device.
 
 ## DR-003: Flutter App Framework
 

@@ -17,6 +17,14 @@ Unlike heavy video editors, VideoFuse focuses on:
 Core philosophy:
 > "Do small video workflow tasks extremely well."
 
+## Delivery Status
+
+- Foundation and app shell: complete.
+- Frame selection (first, last, and custom frames): complete; see
+  [`docs/milestone-1-frame-selection.md`](docs/milestone-1-frame-selection.md).
+- Next focus: multi-video merging and reliable MP4 export; see
+  [`docs/milestone-2-video-merging.md`](docs/milestone-2-video-merging.md).
+
 ---
 
 # Target Users
@@ -85,10 +93,10 @@ The app should feel:
 
 # MVP Functionalities
 
-## 1. Extract Last Frame
+## 1. Extract Frame
 
 ### Description
-Extract the last frame from one or multiple videos.
+Extract and save a first, last, or custom frame from one video.
 
 ### Use Cases
 - AI continuity workflows
@@ -99,7 +107,7 @@ Extract the last frame from one or multiple videos.
 
 ### Inputs
 - single video
-- multiple videos
+- one video
 
 ### Outputs
 - PNG/JPEG images
@@ -513,7 +521,7 @@ Key implementation tasks:
 - Add baseline packages for file picking, permission handling, path management, sharing, and video processing.
 - Define app routes/screens:
   - Home
-  - Extract Last Frame
+  - Extract Frame
   - Stitch Videos
   - Processing Progress
   - Export Result
@@ -578,10 +586,11 @@ Suggestions and rationale:
 
 ---
 
-## Milestone 2 — Extract Last Frame
+## Milestone 2 — Extract Frame
 
 Goal:
-Ship the first complete utility workflow end to end.
+Ship the frame-selection workflow end to end, including first, last, and custom
+frame previews.
 
 Estimated duration:
 4-6 days.
@@ -617,7 +626,7 @@ Suggestions and rationale:
 
 ---
 
-## Milestone 3 — Stitch Videos
+## Milestone 3 — Stitch Videos (Next implementation focus)
 
 Goal:
 Ship the second complete MVP utility workflow end to end.

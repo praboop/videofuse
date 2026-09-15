@@ -4,10 +4,18 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+dependencies {
+    implementation("androidx.media3:media3-inspector-frame:1.11.0")
+}
+
 android {
     namespace = "com.videofuse.app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Keep this aligned with the NDK installed in the local Android SDK.
+    // Flutter's default currently requests 28.2.13676358, which is not
+    // available in this SDK and causes Gradle to invoke sdkmanager/Android CLI
+    // during configuration. The installed NDK is 30.0.16138531.
+    ndkVersion = "30.0.16138531"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

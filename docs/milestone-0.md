@@ -17,7 +17,7 @@ Completed:
 - Flutter Android app scaffold generated in `/mobile-app`.
 - Android app label set to `VideoFuse`.
 - Android application ID set to `com.videofuse.app`.
-- MVP app shell added with Home, Extract Last Frame, Stitch Videos, Processing Progress, and Export Result screens.
+- MVP app shell added with Home, Extract Frame, Stitch Videos, Processing Progress, and Export Result screens.
 - Baseline Flutter dependencies added.
 - Android debug APK build verified.
 - Android emulator profile `videofuse_android` created.
@@ -58,9 +58,9 @@ Current acceptance status:
 - Android emulator launch verification is satisfied.
 - Physical Android device launch remains useful but is not required to close Milestone 0.
 
-## Suggested Next Steps
+## Follow-up
 
-1. Start Milestone 1 media selection implementation with `file_selector`.
-2. Choose the Milestone 1 FFmpeg adapter after validating Android build compatibility.
-3. Add the first processing-service interface before wiring media commands into UI.
-4. Test on a physical Android device once media permissions and storage flows are implemented.
+The foundation milestone is complete. Media selection, frame preview, custom frame
+selection, caching, and frame saving are tracked in
+[`milestone-1-frame-selection.md`](milestone-1-frame-selection.md). The next
+milestone is the multi-video merging workflow.
