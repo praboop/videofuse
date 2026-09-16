@@ -5,72 +5,70 @@ Use this file as the compact starting context for the next coding session.
 ## Current product state
 
 - Android-first Flutter app: VideoFuse.
-- Frame-selection milestone is complete.
-- The next focus is merging multiple videos into one ordered MP4.
+- Frame selection and Milestone 2 — Video Merging are complete.
+- Merge Videos supports persisted Android document URIs; add, remove, reorder,
+  and select clips; three representative previews; media inspection;
+  output-resolution choices; real progress; cancellation; foreground background
+  handling; editable Downloads filenames; save; and share.
+- Compatible same-resolution clips selected as `Same as source` use the
+  compressed-sample fast path. Other exports use AndroidX Media3 Transformer
+  normalization with preserved audio and fit-to-frame presentation.
+- The merge, save, and linear-progress UI flow was verified on a physical
+  Android device on 2026-09-16.
 - Source media stays on-device; no account, backend, or upload flow exists.
 
 ## Important project paths
 
-- `mobile-app/lib/main.dart` — app screens and frame-selection UI.
-- `mobile-app/lib/processing_service.dart` — Flutter method-channel processing API and in-memory thumbnail cache.
-- `mobile-app/android/app/src/main/kotlin/com/videofuse/app/MainActivity.kt` — Android processing implementation.
-- `mobile-app/android/app/build.gradle.kts` — Android dependencies, including Media3 frame inspection.
-- `docs/milestone-2-video-merging.md` — merging goal and acceptance criteria.
+- `mobile-app/lib/main.dart` — app bootstrap, routing, and home UI.
+- `mobile-app/lib/frame_selection_screen.dart` — frame-selection screen.
+- `mobile-app/lib/frame_selection_widgets.dart` — frame preview widgets and time input formatter.
+- `mobile-app/lib/merge_videos_screen.dart` — Merge Videos selection, export, and result UI.
+- `mobile-app/lib/models/selected_video.dart` — shared selected-video model.
+- `mobile-app/lib/services/processing_service.dart` — Flutter method/Event-channel processing API and thumbnail cache.
+- `mobile-app/android/app/src/main/kotlin/com/videofuse/app/MainActivity.kt` — Android media processing implementation.
+- `mobile-app/android/app/src/main/kotlin/com/videofuse/app/MergeForegroundService.kt` — foreground export notification service.
+- `mobile-app/android/app/build.gradle.kts` — Android and Media3 dependencies.
+- `docs/milestone-2-video-merging.md` — completed merge-milestone record.
+- `docs/milestone-3-video-editor.md` — next milestone scope and acceptance criteria.
 - `core-processing/README.md` — processing conventions and output expectations.
 
-## Existing processing behavior
+## Start here: Milestone 3 — Video Editor
 
-- Coarse cache previews are created on Android's background processing executor
-  through `MediaMetadataRetriever` with nearest-sync seeking. This uses the
-  platform codec (normally hardware accelerated where the device supports the
-  source codec); it does not move video bytes or decode work into Dart.
-- The custom-frame grid is cache-only after the cache exists: it selects the
-  nearest cached tile for highlighting instead of inserting an uncached slider
-  timestamp and waiting for a decoder seek.
-- Frame cache is in memory and keyed by source path plus timestamp.
-- Detailed surrounding previews use one native contiguous 61-frame
-  `getFramesAtIndex` request (30 before and after), scaled to 240x135. Devices
-  below API 28, or decoder failures, fall back to timestamp seeking. Exact frame
-  decoding happens only when saving a selected frame, at original resolution.
-- Extracted frames are saved through Android Downloads using the method channel.
-- Frame saves use full-resolution `MediaMetadataRetriever.getFrameAtTime`; the
-  UI preview may scale the image, but the exported PNG does not.
-- Video selection uses the native Android `ACTION_OPEN_DOCUMENT` bridge and returns
-  persisted content URIs plus metadata; do not reintroduce `file_selector`, which
-  serializes the entire selected file as bytes through Flutter.
-- Stitching is exposed as `ProcessingService.stitchVideos(...)` and native `stitchVideos(...)`, but it still needs a production-quality implementation.
+Video Editor is its own pipeline, not a merge-result-only feature. Begin with
+submilestone 3.1 by adding a home-screen `Edit video` action that opens the
+native picker for one existing video, plus a shared editor route that also
+accepts a completed merge output. The first implementation should provide:
 
-## Current baseline and known build note
+1. A video player with play/pause, elapsed/total time, and a draggable timeline scrubber.
+2. Playback-rate control (0.25x, 0.5x, 1x, 1.5x, 2x), normal seek jumps, and
+   previous/next decoded-frame controls while paused.
+3. Double-tap video fullscreen toggle, plus explicit accessible controls.
+4. Two inputs to the same editor route: a selected source URI or a completed
+   merge output. Neither input may be changed in place; export produces a new
+   MP4.
 
-- The cache/detail regression was fixed: the grid no longer seeks for an
-  uncached slider timestamp, and the detail strip uses a contiguous native
-  frame request with a timestamp-seek fallback.
-- A Kotlin logging-line quoting error reported by VS Code was corrected in
-  `MainActivity.kt`; the cascading unresolved-reference errors came from that
-  parser failure. The Built-in Kotlin migration message is only a deprecation
-  warning.
-- `flutter analyze` and `flutter test` pass. After pulling this handoff into a
-  new session, rebuild the Android APK before testing on the phone.
+Do not implement range editing, ripple delete, copy/paste, undo/redo, or edited
+export until submilestone 3.1 playback is usable and verified. Those belong to
+submilestones 3.2–3.4 in `docs/milestone-3-video-editor.md`.
 
-## Frame-performance diagnostics
+## Existing processing notes
 
-- Flutter logs are timestamped as `[VideoFuse][ISO-8601][Processing|Grid|Detail]`.
-  They report cache hit/miss counts, native request start/completion, stale UI
-  results, frame counts, selected frame index, and elapsed milliseconds.
-- Android logs use the `VideoFuse` tag and include elapsed realtime timestamps,
-  request parameters, contiguous-frame metadata/counts, and any fallback cause.
-- To capture a run: `adb logcat -v threadtime -s VideoFuse:D flutter:D *:S`.
+- Video selection uses native `ACTION_OPEN_DOCUMENT` and persisted `content://`
+  URIs. Do not reintroduce byte-based Flutter file picking.
+- Merge thumbnails use Android `MediaMetadataRetriever`; the detailed
+  frame-selection strip uses one contiguous native 61-frame request where
+  supported, with timestamp-seek fallback.
+- Merge progress is delivered through a native EventChannel. Fast copy reports
+  processed-duration progress; Media3 reports `Transformer.getProgress`.
+- Native merge cancellation cleans up temporary output. The foreground `dataSync`
+  service runs while export is active.
 
-## Next implementation tasks
+## Baseline and verification
 
-1. Start with `docs/milestone-2-video-merging.md` and audit the current native
-   stitch implementation before changing the UI.
-2. Replace the prototype merge path with a reliable ordered merge implementation.
-3. Handle differing codecs, resolutions, orientations, frame rates, and audio tracks.
-4. Keep processing off the UI thread and report progress/cancellation.
-5. Preserve the reorder shown in the Stitch Videos screen and export a playable MP4.
-6. Add save/share completion handling and test two/three clips, mixed media
-   properties, audio, and failed/unsupported input.
+- `flutter analyze` and `flutter test` pass.
+- Android debug Kotlin compilation passes.
+- Rebuild the Android APK before phone testing. If Gradle cannot find Java,
+  configure Android Studio's bundled JDK as `JAVA_HOME`.
 
 ## Verification commands
 
@@ -89,9 +87,7 @@ flutter build apk --release
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
-If Gradle cannot find Java, configure Android Studio's bundled JDK as `JAVA_HOME`.
-
 ## Documentation rule
 
-Update `docs/milestone-2-video-merging.md`, `README.md`, and the decision/core-processing
-notes when merging behavior or output guarantees change.
+Update `docs/milestone-3-video-editor.md`, `README.md`, and the decision/core-processing
+notes when editor behavior, editing guarantees, or export behavior changes.

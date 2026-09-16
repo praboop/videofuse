@@ -7,6 +7,8 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.content.Intent
@@ -14,32 +16,69 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.provider.MediaStore
 import androidx.media3.common.MediaItem
+import androidx.media3.effect.Presentation
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.inspector.frame.FrameExtractor
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import com.google.common.util.concurrent.Futures
 import java.io.FileInputStream
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 import java.io.File
 import kotlin.math.roundToInt
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val CHANNEL = "com.videofuse.processing"
+private const val MERGE_PROGRESS_CHANNEL = "com.videofuse.processing/merge-progress"
 
 class MainActivity : FlutterActivity() {
     private val processingExecutor = Executors.newFixedThreadPool(2)
     private var pendingPickerResult: MethodChannel.Result? = null
+    @Volatile private var activeMerge: ActiveMerge? = null
+    @Volatile private var mergeProgressSink: EventChannel.EventSink? = null
+    private val mergeLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val pickerRequestCode = 4107
 
+    private class ActiveMerge(
+        val output: File,
+        val result: MethodChannel.Result,
+    ) {
+        val cancelled = AtomicBoolean(false)
+        @Volatile var transformer: Transformer? = null
+    }
+
+    private data class OutputSize(val width: Int, val height: Int)
+
     override fun onDestroy() {
-        processingExecutor.shutdownNow()
+        if (activeMerge == null) processingExecutor.shutdownNow()
         super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, MERGE_PROGRESS_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    mergeProgressSink = events
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    mergeProgressSink = null
+                }
+            })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "extractDetailedFrameStrip") {
                 val inputPath = call.argument<String>("inputPath")
@@ -109,8 +148,30 @@ class MainActivity : FlutterActivity() {
                     "extractFrameAt" -> result.success(extractFrameAt(call.argument<String>("inputPath")!!, call.argument<Int>("timeMs") ?: 0))
                     "durationMs" -> result.success(videoDurationMs(call.argument<String>("inputPath")!!))
                     "frameRate" -> result.success(videoFrameRate(call.argument<String>("inputPath")!!))
+                    "inspectVideo" -> result.success(inspectVideo(call.argument<String>("inputPath")!!))
                     "saveToDownloads" -> result.success(saveToDownloads(call.argument<String>("inputPath")!!, call.argument<String>("displayName")!!))
-                    "stitchVideos" -> result.success(stitchVideos(call.argument<List<String>>("inputPaths")!!))
+                    "saveVideoToDownloads" -> result.success(saveVideoToDownloads(call.argument<String>("inputPath")!!, call.argument<String>("displayName")!!))
+                    "cancelMerge" -> result.success(cancelMerge())
+                    "mergeVideos" -> {
+                        val inputPaths = call.argument<List<String>>("inputPaths")
+                        if (inputPaths == null || inputPaths.size < 2) {
+                            result.error("INVALID_ARGUMENTS", "Select at least two videos", null)
+                        } else {
+                            mergeVideos(
+                                inputPaths,
+                                call.argument<String>("outputResolution") ?: "highest",
+                                result,
+                            )
+                        }
+                    }
+                    "stitchVideos" -> {
+                        val inputPaths = call.argument<List<String>>("inputPaths")
+                        if (inputPaths == null || inputPaths.size < 2) {
+                            result.error("INVALID_ARGUMENTS", "Select at least two videos", null)
+                        } else {
+                            mergeVideos(inputPaths, "highest", result)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             } catch (error: Exception) {
@@ -225,6 +286,48 @@ class MainActivity : FlutterActivity() {
                 }
             }
             rate
+        } finally {
+            extractor.release()
+        }
+    }
+
+    private fun inspectVideo(inputPath: String): Map<String, Any?> {
+        val extractor = MediaExtractor()
+        setExtractorSource(extractor, inputPath)
+        val result = mutableMapOf<String, Any?>()
+        try {
+            var width = 0
+            var height = 0
+            var rotation = 0
+            var videoMime: String? = null
+            var audioMime: String? = null
+            var frameRate = 30.0
+            for (index in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(index)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    videoMime = mime
+                    if (format.containsKey(MediaFormat.KEY_WIDTH)) width = format.getInteger(MediaFormat.KEY_WIDTH)
+                    if (format.containsKey(MediaFormat.KEY_HEIGHT)) height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                    if (format.containsKey(MediaFormat.KEY_ROTATION)) rotation = format.getInteger(MediaFormat.KEY_ROTATION)
+                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) frameRate = format.getInteger(MediaFormat.KEY_FRAME_RATE).toDouble()
+                } else if (mime.startsWith("audio/")) {
+                    audioMime = mime
+                }
+            }
+            val retriever = MediaMetadataRetriever()
+            setRetrieverSource(retriever, inputPath)
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            retriever.release()
+            result["durationMs"] = duration
+            result["width"] = width
+            result["height"] = height
+            result["rotation"] = rotation
+            result["frameRate"] = frameRate
+            result["videoMime"] = videoMime
+            result["audioMime"] = audioMime
+            result["hasAudio"] = audioMime != null
+            return result
         } finally {
             extractor.release()
         }
@@ -380,39 +483,343 @@ class MainActivity : FlutterActivity() {
         return uri.toString()
     }
 
-    private fun stitchVideos(paths: List<String>): String {
-        require(paths.size >= 2) { "Select at least two videos" }
-        val first = MediaExtractor()
-        setExtractorSource(first, paths[0])
-        val output = File.createTempFile("videofuse_stitched_", ".mp4", cacheDir)
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val trackMap = HashMap<Int, Int>()
-        for (i in 0 until first.trackCount) trackMap[i] = muxer.addTrack(first.getTrackFormat(i))
-        muxer.start()
-        val buffer = java.nio.ByteBuffer.allocate(1024 * 1024)
-        val info = MediaCodec.BufferInfo()
-        var videoOffset = 0L
-        for (path in paths) {
-            val extractor = MediaExtractor()
-            setExtractorSource(extractor, path)
-            for (track in 0 until extractor.trackCount) {
-                extractor.selectTrack(track)
-                var sampleTime: Long
-                while (extractor.readSampleData(buffer, 0) >= 0) {
-                    sampleTime = extractor.sampleTime
-                    info.offset = 0
-                    info.size = extractor.sampleSize.toInt()
-                    info.presentationTimeUs = sampleTime + videoOffset
-                    info.flags = extractor.sampleFlags
-                    muxer.writeSampleData(trackMap[track] ?: continue, buffer, info)
-                    extractor.advance()
-                }
-                extractor.unselectTrack(track)
-            }
-            videoOffset += 1_000_000L
-            extractor.release()
+    private fun saveVideoToDownloads(inputPath: String, displayName: String): String {
+        val values = android.content.ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+            put(MediaStore.Downloads.MIME_TYPE, "video/mp4")
+            put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        muxer.stop(); muxer.release(); first.release()
-        return output.absolutePath
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Could not create a Downloads file")
+        contentResolver.openOutputStream(uri).use { output ->
+            requireNotNull(output)
+            FileInputStream(inputPath).use { input -> input.copyTo(output) }
+        }
+        values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
+        return uri.toString()
+    }
+
+    private fun cancelMerge(): Boolean {
+        val active = synchronized(mergeLock) {
+            val current = activeMerge ?: return false
+            activeMerge = null
+            current
+        }
+        active.cancelled.set(true)
+        active.output.delete()
+        active.transformer?.cancel()
+        stopMergeForegroundService()
+        emitMergeProgress(0)
+        active.result.error("CANCELLED", "Video merge cancelled", null)
+        return true
+    }
+
+    private fun mergeVideos(
+        paths: List<String>,
+        outputResolution: String,
+        result: MethodChannel.Result,
+    ) {
+        val output = File.createTempFile("videofuse_merge_", ".mp4", cacheDir)
+        val active = ActiveMerge(output, result)
+        synchronized(mergeLock) {
+            if (activeMerge != null) {
+                output.delete()
+                result.error("MERGE_BUSY", "A video merge is already running", null)
+                return
+            }
+            activeMerge = active
+        }
+        startMergeForegroundService()
+        emitMergeProgress(0)
+        // Most phone clips already use the same H.264/AAC formats. In that
+        // case copying compressed samples is dramatically faster than asking
+        // Transformer to decode and encode every frame.
+        processingExecutor.execute {
+            if (outputResolution == "source" && tryFastMerge(paths, output, active)) {
+                mainHandler.post {
+                    if (!active.cancelled.get()) {
+                        Log.d("VideoFuse", "fast merge complete output=${output.absolutePath}")
+                        finishMergeSuccess(active)
+                    }
+                }
+            } else {
+                runOnUiThread {
+                    if (!active.cancelled.get()) {
+                        startTransformerMerge(paths, outputResolution, active)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isActiveMerge(active: ActiveMerge): Boolean =
+        synchronized(mergeLock) { activeMerge === active }
+
+    private fun finishMergeSuccess(active: ActiveMerge) {
+        if (!isActiveMerge(active)) return
+        synchronized(mergeLock) { if (activeMerge === active) activeMerge = null }
+        stopMergeForegroundService()
+        emitMergeProgress(100)
+        active.result.success(active.output.absolutePath)
+    }
+
+    private fun finishMergeError(active: ActiveMerge, message: String, error: Exception? = null) {
+        if (!isActiveMerge(active)) return
+        synchronized(mergeLock) { if (activeMerge === active) activeMerge = null }
+        active.output.delete()
+        stopMergeForegroundService()
+        Log.e("VideoFuse", message, error)
+        active.result.error("PROCESSING_FAILED", message, null)
+    }
+
+    private fun emitMergeProgress(percent: Int) {
+        mainHandler.post { mergeProgressSink?.success(percent.coerceIn(0, 100)) }
+    }
+
+    private fun startMergeForegroundService() {
+        try {
+            val intent = Intent(this, MergeForegroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (error: Exception) {
+            // A foreground service can be unavailable on a restricted device.
+            // The merge still runs while the activity process remains alive.
+            Log.w("VideoFuse", "Could not start merge foreground service", error)
+        }
+    }
+
+    private fun stopMergeForegroundService() {
+        stopService(Intent(this, MergeForegroundService::class.java))
+    }
+
+    private fun compatibleTrack(a: MediaFormat, b: MediaFormat, mime: String): Boolean {
+        if (a.getString(MediaFormat.KEY_MIME) != mime || b.getString(MediaFormat.KEY_MIME) != mime) return false
+        val keys = if (mime.startsWith("video/")) {
+            listOf(MediaFormat.KEY_WIDTH, MediaFormat.KEY_HEIGHT, MediaFormat.KEY_FRAME_RATE)
+        } else {
+            listOf(MediaFormat.KEY_SAMPLE_RATE, MediaFormat.KEY_CHANNEL_COUNT)
+        }
+        return keys.all { key ->
+            !a.containsKey(key) || !b.containsKey(key) || a.getInteger(key) == b.getInteger(key)
+        }
+    }
+
+    private fun tryFastMerge(paths: List<String>, output: File, active: ActiveMerge): Boolean {
+        val extractors = mutableListOf<MediaExtractor>()
+        var muxer: MediaMuxer? = null
+        var completed = false
+        return try {
+            val firstFormats = mutableMapOf<String, MediaFormat>()
+            paths.forEachIndexed { index, path ->
+                val extractor = MediaExtractor()
+                setExtractorSource(extractor, path)
+                extractors += extractor
+                val formats = mutableMapOf<String, MediaFormat>()
+                for (track in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(track)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    if (mime.startsWith("video/") || mime.startsWith("audio/")) formats[mime.substringBefore('/')] = format
+                }
+                if (index == 0) firstFormats.putAll(formats)
+                else if (formats.keys != firstFormats.keys || formats.any { (kind, format) ->
+                        !compatibleTrack(firstFormats.getValue(kind), format, format.getString(MediaFormat.KEY_MIME)!!)
+                    }) return false
+            }
+
+            if (active.cancelled.get()) return false
+            val sourceDurationsUs = extractors.map { extractor ->
+                (0 until extractor.trackCount).mapNotNull { track ->
+                    val format = extractor.getTrackFormat(track)
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else null
+                }.maxOrNull() ?: 0L
+            }
+            val totalDurationUs = sourceDurationsUs.sum().coerceAtLeast(1L)
+            var completedDurationUs = 0L
+            var lastProgress = -1
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val outputTracks = mutableMapOf<String, Int>()
+            firstFormats.forEach { (kind, format) -> outputTracks[kind] = muxer.addTrack(format) }
+            muxer.start()
+            var offsetUs = 0L
+            val buffer = ByteBuffer.allocate(4 * 1024 * 1024)
+            val info = android.media.MediaCodec.BufferInfo()
+            for ((sourceIndex, extractor) in extractors.withIndex()) {
+                var segmentEndUs = 0L
+                for (track in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(track)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    val kind = when {
+                        mime.startsWith("video/") -> "video"
+                        mime.startsWith("audio/") -> "audio"
+                        else -> continue
+                    }
+                    extractor.selectTrack(track)
+                    while (true) {
+                        if (active.cancelled.get()) return false
+                        buffer.clear()
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) break
+                        val sampleTimeUs = extractor.sampleTime.coerceAtLeast(0L)
+                        info.set(0, size, sampleTimeUs + offsetUs, extractor.sampleFlags)
+                        muxer.writeSampleData(outputTracks.getValue(kind), buffer, info)
+                        segmentEndUs = maxOf(segmentEndUs, sampleTimeUs)
+                        val progress = (((completedDurationUs + sampleTimeUs) * 99) / totalDurationUs)
+                            .toInt()
+                            .coerceIn(0, 99)
+                        if (progress > lastProgress) {
+                            lastProgress = progress
+                            emitMergeProgress(progress)
+                        }
+                        extractor.advance()
+                    }
+                    extractor.unselectTrack(track)
+                }
+                val declaredDurationUs = firstFormats.values.mapNotNull { format ->
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else null
+                }.maxOrNull() ?: 0L
+                offsetUs += maxOf(segmentEndUs + 1L, declaredDurationUs)
+                completedDurationUs += sourceDurationsUs[sourceIndex]
+            }
+            muxer.stop()
+            completed = true
+            true
+        } catch (error: Exception) {
+            Log.i("VideoFuse", "fast merge unavailable; falling back to Transformer: ${error.message}")
+            false
+        } finally {
+            try { muxer?.release() } catch (_: Exception) { }
+            extractors.forEach { try { it.release() } catch (_: Exception) { } }
+            if (!completed && output.exists()) output.delete()
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun resolveOutputSize(paths: List<String>, outputResolution: String): OutputSize {
+        when (outputResolution) {
+            "1080p" -> return OutputSize(1920, 1080)
+            "720p" -> return OutputSize(1280, 720)
+        }
+        val sourceSizes = paths.mapNotNull { path ->
+            val extractor = MediaExtractor()
+            try {
+                setExtractorSource(extractor, path)
+                (0 until extractor.trackCount).firstNotNullOfOrNull { track ->
+                    val format = extractor.getTrackFormat(track)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: return@firstNotNullOfOrNull null
+                    if (mime.startsWith("video/") &&
+                        format.containsKey(MediaFormat.KEY_WIDTH) &&
+                        format.containsKey(MediaFormat.KEY_HEIGHT)
+                    ) {
+                        OutputSize(
+                            format.getInteger(MediaFormat.KEY_WIDTH),
+                            format.getInteger(MediaFormat.KEY_HEIGHT),
+                        )
+                    } else {
+                        null
+                    }
+                }
+            } finally {
+                extractor.release()
+            }
+        }
+        if (sourceSizes.isEmpty()) return OutputSize(1920, 1080)
+        if (outputResolution == "source" && sourceSizes.distinct().size == 1) {
+            return sourceSizes.first()
+        }
+        return sourceSizes.maxBy { it.width.toLong() * it.height }
+    }
+
+    private fun startTransformerMerge(
+        paths: List<String>,
+        outputResolution: String,
+        active: ActiveMerge,
+    ) {
+        if (!isActiveMerge(active) || active.cancelled.get()) return
+        try {
+            // A single output canvas prevents a visible size/aspect-ratio jump
+            // at clip boundaries. SCALE_TO_FIT preserves each source aspect
+            // ratio and uses black bars where the source does not match.
+            val outputSize = resolveOutputSize(paths, outputResolution)
+            val targetWidth = outputSize.width
+            val targetHeight = outputSize.height
+            val uniformEffects = Effects(
+                emptyList(),
+                listOf(
+                    Presentation.createForWidthAndHeight(
+                        targetWidth,
+                        targetHeight,
+                        Presentation.LAYOUT_SCALE_TO_FIT,
+                    ),
+                ),
+            )
+            val items = paths.map { path ->
+                EditedMediaItem.Builder(MediaItem.fromUri(path)).build()
+            }
+            val sequence = EditedMediaItemSequence.withAudioAndVideoFrom(items)
+            val composition = Composition.Builder(sequence)
+                .setEffects(uniformEffects)
+                // Force the normalized export path to process both tracks so
+                // differing audio sample rates and codecs are handled by
+                // Transformer instead of being copied through unchanged.
+                .setTransmuxVideo(false)
+                .setTransmuxAudio(false)
+                .build()
+            lateinit var transformer: Transformer
+            transformer = Transformer.Builder(this)
+                .setVideoMimeType("video/avc")
+                .setAudioMimeType("audio/mp4a-latm")
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        if (active.transformer !== transformer) return
+                        Log.d("VideoFuse", "merge complete output=${active.output.absolutePath}")
+                        finishMergeSuccess(active)
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException,
+                    ) {
+                        if (active.transformer !== transformer) return
+                        finishMergeError(
+                            active,
+                            "Video merge failed: ${exportException.message}",
+                            exportException,
+                        )
+                    }
+                })
+                .build()
+            try {
+                // Transformer owns its application thread and performs the
+                // actual transcode asynchronously. Starting it here keeps
+                // creation and access on the same handler thread.
+                active.transformer = transformer
+                transformer.start(composition, active.output.absolutePath)
+                scheduleTransformerProgress(active, transformer)
+            } catch (error: Exception) {
+                finishMergeError(active, "Could not start video merge: ${error.message}", error)
+            }
+        } catch (error: Exception) {
+            finishMergeError(active, "Could not prepare video merge: ${error.message}", error)
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun scheduleTransformerProgress(active: ActiveMerge, transformer: Transformer) {
+        val progressHolder = ProgressHolder()
+        val pollProgress = object : Runnable {
+            override fun run() {
+                if (!isActiveMerge(active) || active.cancelled.get()) return
+                if (transformer.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    emitMergeProgress(progressHolder.progress)
+                }
+                mainHandler.postDelayed(this, 250)
+            }
+        }
+        mainHandler.post(pollProgress)
     }
 }

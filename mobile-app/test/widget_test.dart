@@ -8,7 +8,7 @@ void main() {
 
     expect(find.text('VideoFuse'), findsAtLeastNWidgets(1));
     expect(find.text('Extract a frame'), findsOneWidget);
-    expect(find.text('Stitch videos'), findsOneWidget);
+    expect(find.text('Merge videos'), findsOneWidget);
   });
 
   testWidgets('utility tiles open their setup screens', (tester) async {
@@ -21,9 +21,10 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Stitch videos'));
+    await tester.tap(find.text('Merge videos'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Choose videos'), findsOneWidget);
+    expect(find.text('Select at least 2 videos'), findsOneWidget);
+    expect(find.text('Add videos'), findsOneWidget);
   });
 }

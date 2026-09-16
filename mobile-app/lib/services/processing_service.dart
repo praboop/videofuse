@@ -1,8 +1,11 @@
-import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 class ProcessingService {
   static const _channel = MethodChannel('com.videofuse.processing');
+  static const _mergeProgressChannel = EventChannel(
+    'com.videofuse.processing/merge-progress',
+  );
   final Map<String, String> _thumbnailCache = <String, String>{};
 
   void _trace(String message) {
@@ -46,11 +49,6 @@ class ProcessingService {
       if (index == 99) return durationMs;
       return (durationMs * index / 99).round();
     });
-    // One native extractor session is substantially faster and uses less
-    // memory than repeatedly creating ten separate decoder sessions.
-    // Use the bounded retriever path for the coarse cache as well. Media3's
-    // asynchronous queue can saturate some vendor Codec2 implementations when
-    // 100 seek requests are submitted in one session.
     _trace('prefetch start count=${times.length} durationMs=$durationMs');
     await extractThumbnailStrip(
       inputPath,
@@ -103,6 +101,16 @@ class ProcessingService {
       }))?.toDouble() ??
       30.0;
 
+  Future<Map<String, dynamic>> inspectVideo(String inputPath) async {
+    final result = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'inspectVideo',
+      {'inputPath': inputPath},
+    );
+    return result == null
+        ? <String, dynamic>{}
+        : Map<String, dynamic>.from(result);
+  }
+
   Future<List<String>> extractThumbnailStrip(
     String inputPath,
     List<int> timesMs, {
@@ -110,9 +118,6 @@ class ProcessingService {
     bool sequential = false,
     bool syncSeek = false,
   }) async {
-    // Exact requests must not reuse a coarse nearest-keyframe image at the
-    // same timestamp. The detailed picker relies on the returned image being
-    // the actual requested frame.
     final missingTimes = exact
         ? timesMs.toList()
         : timesMs
@@ -190,13 +195,41 @@ class ProcessingService {
     return output;
   }
 
-  Future<String> stitchVideos(List<String> inputPaths) async {
-    final output = await _channel.invokeMethod<String>('stitchVideos', {
-      'inputPaths': inputPaths,
+  Future<String> saveVideoToDownloads(
+    String inputPath,
+    String displayName,
+  ) async {
+    final output = await _channel.invokeMethod<String>('saveVideoToDownloads', {
+      'inputPath': inputPath,
+      'displayName': displayName,
     });
-    if (output == null) throw StateError('No stitched video was generated.');
+    if (output == null) throw StateError('The video could not be saved.');
     return output;
   }
+
+  Future<bool> cancelMerge() async =>
+      (await _channel.invokeMethod<bool>('cancelMerge')) ?? false;
+
+  Stream<int> get mergeProgress => _mergeProgressChannel
+      .receiveBroadcastStream()
+      .where((event) => event is num)
+      .map((event) => (event as num).toInt().clamp(0, 100).toInt());
+
+  Future<String> mergeVideos(
+    List<String> inputPaths, {
+    required String outputResolution,
+  }) async {
+    final output = await _channel.invokeMethod<String>('mergeVideos', {
+      'inputPaths': inputPaths,
+      'outputResolution': outputResolution,
+    });
+    if (output == null) throw StateError('No merged video was generated.');
+    return output;
+  }
+
+  @Deprecated('Use mergeVideos')
+  Future<String> stitchVideos(List<String> inputPaths) =>
+      mergeVideos(inputPaths, outputResolution: 'highest');
 }
 
 class DetailedFrameStrip {

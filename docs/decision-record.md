@@ -83,3 +83,49 @@ Use PNG for extracted frames and MP4 for stitched video exports.
 Rationale:
 - PNG is lossless and useful for AI continuity workflows.
 - MP4 is the safest Android playback and sharing format.
+
+## DR-008: Media3 Transformer for Merge Export
+
+Decision:
+Use AndroidX Media3 Transformer for the first production merge pipeline.
+
+Rationale:
+- It provides a native composition API for sequential multi-asset export.
+- It can re-encode incompatible source media to a single MP4 instead of
+  relying on unsafe sample-copy concatenation.
+- It keeps processing on-device and runs the transcode asynchronously.
+
+Output defaults:
+- MP4 container
+- H.264/AVC video
+- AAC audio when audio is present
+- 1920x1080 output canvas using Media3 `Presentation.LAYOUT_SCALE_TO_FIT`
+  (aspect ratio is preserved with letterboxing)
+- Transformer normalization is used when source tracks are not compatible;
+  audio and video transmuxing are disabled for that path
+- App-cache temporary output until the save/share milestone
+
+Known limitations:
+- Crossfades and advanced transitions are out of scope.
+- Actual device support still requires physical Android playback testing.
+
+## DR-009: Observable, Cancellable Merge Jobs
+
+Decision:
+Expose native merge progress through a Flutter event stream, cancel both native
+merge paths through one active-job boundary, and run an Android foreground
+`dataSync` service for the duration of an export.
+
+Rationale:
+- Long-running transcodes need an actual percentage rather than an
+  indeterminate loading state.
+- Users must be able to abandon either a compressed-sample merge or a Media3
+  normalized export without affecting their source clips.
+- A foreground service keeps the active export eligible to continue during
+  ordinary backgrounding, while still respecting Android's execution policy.
+
+Cancellation boundary:
+- Fast-copy export stops before the next compressed sample is written.
+- Media3 export delegates cancellation to `Transformer.cancel`.
+- In both cases, the temporary output is removed and the selected clips remain
+  available for retry.
